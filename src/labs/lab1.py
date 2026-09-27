@@ -61,6 +61,10 @@ class gpt2_block(nn.Module):
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask
         )
+        attn = attn.masked_fill(
+            key_padding_mask.unsqueeze(-1),
+            0
+        )
         x = x + attn
         normed = self.norm2(x)
         x = self.ffn(normed) + x
