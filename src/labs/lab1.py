@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 from transformers import GPT2Config
@@ -11,14 +13,20 @@ class mlp_block(nn.Module):
             config.n_embd,
             config.n_embd * 4
         )
-        self.activation = nn.GELU(approximate="tanh")
         self.down = nn.Linear(
             config.n_embd * 4, 
             config.n_embd
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.activation(self.up(x))
+        x = self.up(x)
+        x = 0.5 * x * (
+            1.0
+            + torch.tanh(
+                math.sqrt(2.0 / math.pi)
+                * (x + 0.044715 * torch.pow(x, 3.0))
+            )
+        )
         return self.down(x)
 
 class gpt2_block(nn.Module):
