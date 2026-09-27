@@ -39,15 +39,29 @@ class gpt2_block(nn.Module):
         )
         self.ffn = mlp_block(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, atten_mask) -> torch.Tensor:
         normed = self.norm1(x)
-        x, _ = self.atten(
+        key_padding_mask = (atten_mask == 0)
+        seq_len = normed.shape[1]
+        attn_mask = causal_mask = torch.triu(
+            torch.ones(
+                seq_len,
+                seq_len,
+                dtype=torch.bool,
+                device=normed.device,
+            ),
+            diagonal=1,
+        )
+        attn, _ = self.atten(
             normed,
             normed,
             normed,
             is_causal=True, 
-            need_weight=False
-        ) + x
+            need_weights=False,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask
+        )
+        x = x + attn
         normed = self.norm2(x)
         x = self.ffn(normed) + x
         return x
@@ -72,11 +86,11 @@ class gpt2_small(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        pos = torch.arrange(0, x.shape[1])
-        embed = self.token_embed(x) + self.position_embed(x)
+    def forward(self, x: torch.Tensor, atten_mask) -> torch.Tensor:
+        pos = (atten_mask.cumsum(dim=1) - 1).clamp_min(0)
+        embed = self.token_embed(x) + self.position_embed(pos)
         for block in self.blocks:
-            embed = block(embed)
+            embed = block(embed, atten_mask)
         embed_norm = self.norm(embed)
         logits = self.lm_head(embed_norm)
         return logits
@@ -103,14 +117,7 @@ def gpt2_complete(
 
     tokenizer = GPT2Tokenizer.from_pretrained("openai-community/gpt2")
     tokenizer.pad_token = tokenizer.eos_token
-
-    tokens = tokenizer(
-        input,
-        padding=True,
-        truncation=True,
-        max_length=max_seq_length,
-        return_tensors="pt"
-    )
+    tokenizer.padding_side = "left"
 
     model = gpt2_small(config)
     pre_model = GPT2LMHeadModel.from_pretrained("gpt2")
@@ -119,11 +126,81 @@ def gpt2_complete(
 
     state_dict = pre_model.state_dict()
 
-    # TODO: copy weight from pretrained gpt2 into gpt2_small class    
+    with torch.no_grad():
+        model.token_embed.weight.copy_(state_dict["transformer.wte.weight"])
+        model.position_embed.weight.copy_(state_dict["transformer.wpe.weight"])
+
+        for index, block in enumerate(model.blocks):
+            prefix = f"transformer.h.{index}"
+            block.norm1.weight.copy_(state_dict[f"{prefix}.ln_1.weight"])
+            block.norm1.bias.copy_(state_dict[f"{prefix}.ln_1.bias"])
+            block.atten.in_proj_weight.copy_(
+                state_dict[f"{prefix}.attn.c_attn.weight"].t()
+            )
+            block.atten.in_proj_bias.copy_(state_dict[f"{prefix}.attn.c_attn.bias"])
+            block.atten.out_proj.weight.copy_(
+                state_dict[f"{prefix}.attn.c_proj.weight"].t()
+            )
+            block.atten.out_proj.bias.copy_(state_dict[f"{prefix}.attn.c_proj.bias"])
+            block.norm2.weight.copy_(state_dict[f"{prefix}.ln_2.weight"])
+            block.norm2.bias.copy_(state_dict[f"{prefix}.ln_2.bias"])
+            block.ffn.up.weight.copy_(state_dict[f"{prefix}.mlp.c_fc.weight"].t())
+            block.ffn.up.bias.copy_(state_dict[f"{prefix}.mlp.c_fc.bias"])
+            block.ffn.down.weight.copy_(
+                state_dict[f"{prefix}.mlp.c_proj.weight"].t()
+            )
+            block.ffn.down.bias.copy_(state_dict[f"{prefix}.mlp.c_proj.bias"])
+
+        model.norm.weight.copy_(state_dict["transformer.ln_f.weight"])
+        model.norm.bias.copy_(state_dict["transformer.ln_f.bias"])
+        model.lm_head.weight.copy_(state_dict["lm_head.weight"])
 
     """ Forward """
+    model.eval()
+    encoded = tokenizer(
+        input,
+        padding=True,
+        truncation=True,
+        max_length=max_seq_length,
+        return_tensors="pt"
+    )
+    token_ids = encoded["input_ids"]
+    atten_mask = encoded["attention_mask"]
+    lengths = atten_mask.sum(dim=1)
+    finished = lengths >= max_seq_length
+    generated = [[] for _ in input]
+    steps = []
 
-    raise NotImplementedError("Implement GPT-2 Small here")
+    with torch.inference_mode():
+        while not bool(finished.all()):
+            logits = model(token_ids, atten_mask)[:, -1, :].clone()
+            active = ~finished
+            logits[~active] = 0
+            next_ids = logits.argmax(dim=-1)
+            next_ids[~active] = tokenizer.eos_token_id
+            steps.append(logits)
 
-if __name__ == "__main__":
-    gpt2_complete(["hi"])
+            for index in range(len(input)):
+                if active[index]:
+                    token = int(next_ids[index])
+                    generated[index].append(token)
+                    lengths[index] += 1
+                    if (token == tokenizer.eos_token_id or 
+                        lengths[index] >= max_seq_length):
+                        finished[index] = True
+
+            token_ids = torch.cat((token_ids, next_ids[:, None]), dim=1)
+            atten_mask = torch.cat(
+                (atten_mask, active[:, None].to(atten_mask.dtype)), dim=1
+            )
+
+    out_str = [
+        tokenizer.decode(ids, skip_special_tokens=True) for ids in generated
+    ]
+    logits = (
+        torch.stack(steps, dim=1)
+        if steps
+        else torch.empty((len(input), 0, config.vocab_size))
+    )
+    
+    return out_str, logits
