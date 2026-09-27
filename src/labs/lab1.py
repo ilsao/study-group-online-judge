@@ -123,8 +123,11 @@ def gpt2_complete(
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    model = gpt2_small(config)
-    pre_model = GPT2LMHeadModel.from_pretrained("gpt2")
+    model = gpt2_small(config).to(dtype=torch.float16)
+    pre_model = GPT2LMHeadModel.from_pretrained(
+        "gpt2",
+        dtype=torch.float16,
+    )
 
     """ Copy Weight """
 
