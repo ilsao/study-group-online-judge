@@ -119,6 +119,50 @@ class gpt2_small(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    @classmethod
+    def from_pretrained(cls) -> gpt2_small:
+        pre_model = GPT2LMHeadModel.from_pretrained(
+            "gpt2",
+            dtype=torch.float16,
+        )
+        model = cls(pre_model.config).to(dtype=torch.float16)
+        state_dict = pre_model.state_dict()
+
+        with torch.no_grad():
+            model.token_embed.weight.copy_(state_dict["transformer.wte.weight"])
+            model.position_embed.weight.copy_(state_dict["transformer.wpe.weight"])
+
+            for index, block in enumerate(model.blocks):
+                prefix = f"transformer.h.{index}"
+                block.norm1.weight.copy_(state_dict[f"{prefix}.ln_1.weight"])
+                block.norm1.bias.copy_(state_dict[f"{prefix}.ln_1.bias"])
+                block.atten.in_proj.weight.copy_(
+                    state_dict[f"{prefix}.attn.c_attn.weight"]
+                )
+                block.atten.in_proj.bias.copy_(
+                    state_dict[f"{prefix}.attn.c_attn.bias"]
+                )
+                block.atten.out_proj.weight.copy_(
+                    state_dict[f"{prefix}.attn.c_proj.weight"]
+                )
+                block.atten.out_proj.bias.copy_(
+                    state_dict[f"{prefix}.attn.c_proj.bias"]
+                )
+                block.norm2.weight.copy_(state_dict[f"{prefix}.ln_2.weight"])
+                block.norm2.bias.copy_(state_dict[f"{prefix}.ln_2.bias"])
+                block.ffn.up.weight.copy_(state_dict[f"{prefix}.mlp.c_fc.weight"])
+                block.ffn.up.bias.copy_(state_dict[f"{prefix}.mlp.c_fc.bias"])
+                block.ffn.down.weight.copy_(
+                    state_dict[f"{prefix}.mlp.c_proj.weight"]
+                )
+                block.ffn.down.bias.copy_(state_dict[f"{prefix}.mlp.c_proj.bias"])
+
+            model.norm.weight.copy_(state_dict["transformer.ln_f.weight"])
+            model.norm.bias.copy_(state_dict["transformer.ln_f.bias"])
+            model.lm_head.weight.copy_(state_dict["lm_head.weight"])
+
+        return model
+
     def forward(self, x: torch.Tensor, atten_mask) -> torch.Tensor:
         pos = (atten_mask.cumsum(dim=1) - 1).clamp_min(0)
         embed = self.token_embed(x) + self.position_embed(pos)
@@ -153,40 +197,7 @@ def gpt2_complete(
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    model = gpt2_small(config).to(dtype=torch.float16)
-    pre_model = GPT2LMHeadModel.from_pretrained(
-        "gpt2",
-        dtype=torch.float16,
-    )
-
-    """ Copy Weight """
-
-    state_dict = pre_model.state_dict()
-
-    with torch.no_grad():
-        model.token_embed.weight.copy_(state_dict["transformer.wte.weight"])
-        model.position_embed.weight.copy_(state_dict["transformer.wpe.weight"])
-
-        for index, block in enumerate(model.blocks):
-            prefix = f"transformer.h.{index}"
-            block.norm1.weight.copy_(state_dict[f"{prefix}.ln_1.weight"])
-            block.norm1.bias.copy_(state_dict[f"{prefix}.ln_1.bias"])
-            block.atten.in_proj.weight.copy_(state_dict[f"{prefix}.attn.c_attn.weight"])
-            block.atten.in_proj.bias.copy_(state_dict[f"{prefix}.attn.c_attn.bias"])
-            block.atten.out_proj.weight.copy_(
-                state_dict[f"{prefix}.attn.c_proj.weight"]
-            )
-            block.atten.out_proj.bias.copy_(state_dict[f"{prefix}.attn.c_proj.bias"])
-            block.norm2.weight.copy_(state_dict[f"{prefix}.ln_2.weight"])
-            block.norm2.bias.copy_(state_dict[f"{prefix}.ln_2.bias"])
-            block.ffn.up.weight.copy_(state_dict[f"{prefix}.mlp.c_fc.weight"])
-            block.ffn.up.bias.copy_(state_dict[f"{prefix}.mlp.c_fc.bias"])
-            block.ffn.down.weight.copy_(state_dict[f"{prefix}.mlp.c_proj.weight"])
-            block.ffn.down.bias.copy_(state_dict[f"{prefix}.mlp.c_proj.bias"])
-
-        model.norm.weight.copy_(state_dict["transformer.ln_f.weight"])
-        model.norm.bias.copy_(state_dict["transformer.ln_f.bias"])
-        model.lm_head.weight.copy_(state_dict["lm_head.weight"])
+    model = gpt2_small.from_pretrained()
 
     """ Forward """
     model.eval()
