@@ -1,13 +1,13 @@
-# Study Group Online Judge
+# Cerulean Fellowship Online Judge
 
-A small online judge for machine-learning study groups. Participants submit a
+A small online judge for Cerulean's fellowship. Participants submit a
 commit from their fork, and the judge evaluates it with its own task tests.
 
 ## Participants
 
 ### Submission flow
 
-1. Fork `cerulean-works/study-group-online-judge` into your GitHub account.
+1. Fork `cerulean-works/fellowship-oj` into your GitHub account.
 2. Implement the task in your fork and push your changes to `main`.
 3. In your fork, open **Actions** → **Submit to study group judge** → **Run
    workflow**, select the task, and run it on `main`.
@@ -281,7 +281,7 @@ Required remote settings:
 - `TS_AUTHKEY`: auth key for the Compose Tailscale node, generated with
   **Generate auth key** in the Tailscale admin console. Use the complete
   `tskey-auth-...` value, rather than an API access token.
-- `TS_HOSTNAME`: defaults to `study-group-online-judge`.
+- `TS_HOSTNAME`: defaults to `fellowship-oj`.
 
 The official Tailscale image and the CLI copied into the judge image both use
 `v1.102.4`. Keep these two versions aligned when upgrading. Tailscale runs in
@@ -311,8 +311,8 @@ the same path in the worker and evaluator containers. Prepare it and find the
 Docker socket group:
 
 ```console
-sudo mkdir -p /var/lib/study-group-online-judge/work
-sudo chown 10001:10001 /var/lib/study-group-online-judge/work
+sudo mkdir -p /var/lib/fellowship-oj/work
+sudo chown 10001:10001 /var/lib/fellowship-oj/work
 stat -c '%g' /var/run/docker.sock
 ```
 
