@@ -135,13 +135,14 @@ def test_notifications_retry_and_restart(tmp_path, monkeypatch):
 def test_public_endpoint_keeps_submission_auth(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from judge.main import app
+    from judge.main import create_app
 
+    monkeypatch.setenv("JUDGE_ALLOW_CODE_SUBMISSIONS", "true")
     monkeypatch.setenv("JUDGE_API_TOKEN", "private-token")
     monkeypatch.setenv("JUDGE_DATABASE_PATH", str(tmp_path / "judge.db"))
     with (
         patch("judge.leaderboard.flock_submissions", return_value=[]),
-        TestClient(app) as client,
+        TestClient(create_app()) as client,
     ):
         response = client.get("/api/leaderboard")
         assert response.status_code == 200
@@ -439,6 +440,7 @@ def test_workflow_text_only_and_escaping(tmp_path):
         assert not list(tmp_path.glob("*.png"))
 
 
+@pytest.mark.screenshot
 def test_standings_png_remains_immutable(tmp_path, monkeypatch):
     from playwright.sync_api import Browser, Locator
 

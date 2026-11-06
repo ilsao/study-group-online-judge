@@ -46,3 +46,8 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = ["judge"]
+
+[tool.pytest.ini_options]
+markers = [
+    "screenshot: optional browser screenshot tests enabled with --run-screenshots",
+]

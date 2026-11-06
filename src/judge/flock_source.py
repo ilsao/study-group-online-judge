@@ -25,7 +25,17 @@ def finite(value):
 class FlockClient:
     def __init__(self):
         self.base = os.environ["JUDGE_FLOCK_API_URL"].rstrip("/")
-        self.key = os.environ["JUDGE_FLOCK_API_KEY"]
+        # Use a CLI token for REST reads. Old API keys are now wandb-only.
+        # Keep the old variable name as an alias for deployments rotating in place.
+        self.token = (
+            os.getenv("JUDGE_FLOCK_TOKEN") or os.getenv("JUDGE_FLOCK_API_KEY") or ""
+        ).strip()
+        if not self.token.startswith("flock_cli_"):
+            raise ValueError(
+                "Set JUDGE_FLOCK_TOKEN to a Flock CLI token from flock login / "
+                "flock token. W&B/API keys no longer work with Flock's REST API; "
+                "JUDGE_FLOCK_API_KEY is only a deprecated alias for the CLI token."
+            )
         self.web = (os.getenv("JUDGE_FLOCK_WEB_URL") or self.base).rstrip("/")
         self.entity = os.getenv("JUDGE_FLOCK_ENTITY") or "cerulean-labs"
 
@@ -36,19 +46,41 @@ class FlockClient:
         request = Request(
             url,
             headers={
-                "Authorization": f"Bearer {self.key}",
+                "Authorization": f"Bearer {self.token}",
                 "User-Agent": "Cerulean-Study-Group-OJ/0.1",
                 "Accept": "application/json",
             },
         )
-        with urlopen(request, timeout=20) as response:
-            return json.load(response)
+        try:
+            with urlopen(request, timeout=20) as response:
+                return json.load(response)
+        except HTTPError as error:
+            if error.code == 401:
+                raise RuntimeError(
+                    "Flock rejected JUDGE_FLOCK_TOKEN (HTTP 401). Run flock login "
+                    "again and replace it with the CLI token from flock token."
+                ) from error
+            if error.code == 403:
+                raise RuntimeError(
+                    "Flock denied leaderboard access (HTTP 403). Check that the "
+                    "CLI token's user can read the JUDGE_FLOCK_ENTITY organization."
+                ) from error
+            raise
 
     def project_path(self, project):
         return f"projects/{quote(self.entity, safe='')}/{quote(project, safe='')}"
 
     def project_url(self, project):
         return f"{self.web}/{quote(self.entity, safe='')}/{quote(project, safe='')}"
+
+    def avatar_url(self, path):
+        # Flock serves these images publicly through its dashboard too. Use that
+        # browser-facing origin rather than the possibly internal API address.
+        if isinstance(path, str) and re.fullmatch(
+            r"/api/v1/avatars/[0-9a-f]{64}", path
+        ):
+            return f"{self.web}{path}"
+        return None
 
     def runs(self, project, filters):
         offset = 0
@@ -116,7 +148,7 @@ def flock_submissions(task_ids):
     midterm = os.getenv("JUDGE_FLOCK_MIDTERM_PROJECT") or "midterm-nanogpt"
     # Verify organization access before treating a missing project as empty.
     members = client.get(f"orgs/{quote(client.entity, safe='')}/members")["members"]
-    owners = {member["id"]: member["name"] for member in members}
+    owners = {member["id"]: member for member in members}
     result = []
     for run in client.runs(labs, {"summary.judge_status": "completed"}):
         actor = run.get("config.github_actor")
@@ -171,8 +203,9 @@ def flock_submissions(task_ids):
             {
                 "id": run["id"],
                 "task_id": MIDTERM_ID,
-                "github_actor": owners[owner],
+                "github_actor": owners[owner]["name"],
                 "participant_id": f"flock:{owner}",
+                "avatar_url": client.avatar_url(owners[owner].get("avatar_url")),
                 "submitted_at": created,
                 "passed": True,
                 "metrics": {"total_train_steps": int(steps), "val_loss": loss},

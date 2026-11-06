@@ -1,13 +1,13 @@
-# Study Group Online Judge
+# Cerulean Fellowship Online Judge
 
-A small online judge for machine-learning study groups. Participants submit a
+A small online judge for Cerulean's fellowship. Participants submit a
 commit from their fork, and the judge evaluates it with its own task tests.
 
 ## Participants
 
 ### Submission flow
 
-1. Fork `cerulean-works/study-group-online-judge` into your GitHub account.
+1. Fork `cerulean-works/fellowship-oj` into your GitHub account.
 2. Implement the task in your fork and push your changes to `main`.
 3. In your fork, open **Actions** → **Submit to study group judge** → **Run
    workflow**, select the task, and run it on `main`.
@@ -43,6 +43,33 @@ fork does not change the evaluation used by the deployed judge.
 The submission workflow prints the queued job ID and a link to its W&B run in
 the run summary. The link becomes active when the judge starts reporting. Open
 it for progress, logs, metrics, and the final pass/fail result.
+
+## Node.js security updates
+
+The UI build stages pin Node.js **22.23.4** for the
+[October 21, 2026 security fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+The standalone UI serves static files through nginx, so its final image has no
+Node server. The Python judge does include Node: Playwright's wheel bundles a
+driver runtime used for browser installation and leaderboard screenshots.
+The judge image replaces that bundled executable with a symlink to Node.js
+**24.22.1** and sets Playwright's supported `PLAYWRIGHT_NODEJS_PATH` override.
+This patches the driver without changing the locked browser version.
+
+After updating the checkout, rebuild and recreate the default services:
+
+```sh
+docker compose build --pull api leaderboard
+docker compose up -d --no-deps --force-recreate api leaderboard
+docker compose exec api node --version
+docker compose exec api /app/.venv/bin/python -c 'from playwright._impl._driver import compute_driver_executable; import subprocess; subprocess.run([compute_driver_executable()[0], "--version"], check=True)'
+docker compose ps
+```
+
+Both version checks must report `v24.22.1`. If the opt-in submission workers
+are enabled, recreate those consumers of the judge image too, using the normal
+submission deployment procedure. Preserve data volumes and secrets. Verify the
+leaderboard and a screenshot after deployment. This is a source/image assessment;
+running production versions require verification on the deployment host.
 
 ## Contributors
 
@@ -180,8 +207,26 @@ uv run ty check
 uv run python -m pytest -q tests
 ```
 
-The API exposes `GET /healthz`, `POST /submissions`, and `GET /jobs/{job_id}`.
-Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
+Screenshot tests are marked `screenshot` and skipped by default, including in CI.
+To run them locally, build the UI and install Chromium, then opt in explicitly:
+
+```console
+npm ci --prefix ui && npm run build --prefix ui
+uv run playwright install --with-deps --only-shell chromium
+uv run python -m pytest -q tests --run-screenshots -m screenshot
+```
+
+The API exposes `GET /healthz` and public `GET /api/leaderboard` by default.
+`JUDGE_ALLOW_CODE_SUBMISSIONS` defaults to `false`: the submission router is not
+registered, so `POST /submissions` and `GET /jobs/{job_id}` are absent from the
+API and OpenAPI documentation. CPU/SSH workers exit without processing
+queued jobs. Leaderboard fetching, display, and notifications remain available;
+no submission token, W&B key, or remote judge configuration is needed for this mode.
+The flag is read at startup, so restart the API and workers after changing it.
+Existing Slurm jobs that were already dispatched must be managed separately.
+
+Set `JUDGE_ALLOW_CODE_SUBMISSIONS=true` to enable the submission system.
+Submission and job routes then require `Authorization: Bearer <JUDGE_API_TOKEN>`.
 GPU submissions additionally require an `Idempotency-Key`. Successful submission
 means the job is persisted locally, not that Slurm has accepted it. The job ID
 and W&B run ID remain stable when the same request is retried. Reusing a key
@@ -197,8 +242,30 @@ one configured Slurm login node. A separate SSH worker prepares submissions
 and monitors them; the remote helper publishes logs and results directly to W&B
 using a credential stored on that node.
 
-Copy `.env.example` to `.env` and set the API token, W&B credentials, and remote
-configuration. Each new GPU job fetches the latest default-branch version of
+Copy `.env.example` to `.env` and configure the Flock leaderboard credentials.
+`docker compose up -d --build` starts the `api` and standalone `leaderboard`
+services by default. The leaderboard serves HTTP on container port `80`;
+point your reverse proxy at that service. Its Nginx proxy forwards `/api/`
+requests to `JUDGE_API_URL`, defaulting to `http://judge-leaderboard-api:8000`
+on the Compose network. Set `JUDGE_API_URL` in `.env` to use another OJ HTTP or HTTPS origin,
+without a path or trailing slash. After changing it, run
+`docker compose up -d --force-recreate leaderboard`; no image rebuild is needed.
+
+The default uses an alias assigned only to the API's private Compose network.
+On hosts such as Dokploy, the UI can also join a shared ingress network where
+another application's `api` hostname would otherwise receive these requests.
+For an existing deployment using `JUDGE_API_URL=http://api:8000`, remove that
+override or change it to `http://judge-leaderboard-api:8000`, then redeploy both
+`api` and `leaderboard` so the API receives its new network alias. Keep explicit
+HTTP or HTTPS origins when intentionally using an external OJ.
+
+For code submissions, also set `JUDGE_ALLOW_CODE_SUBMISSIONS=true`, the API token,
+W&B credentials, and remote configuration, then start the worker services with
+`docker compose --profile submissions up -d --build`.
+To switch an existing deployment to leaderboard-only mode, set the flag to `false`,
+run `docker compose --profile submissions stop worker ssh-worker tailscale`, and
+recreate the API with `docker compose up -d --force-recreate api`.
+Each new GPU job fetches the latest default-branch version of
 `JUDGE_REPO_URL` for its evaluator. No `JUDGE_REVISION` setting is required.
 Push evaluator updates to that branch before submitting jobs that should use them.
 
@@ -214,7 +281,7 @@ Required remote settings:
 - `TS_AUTHKEY`: auth key for the Compose Tailscale node, generated with
   **Generate auth key** in the Tailscale admin console. Use the complete
   `tskey-auth-...` value, rather than an API access token.
-- `TS_HOSTNAME`: defaults to `study-group-online-judge`.
+- `TS_HOSTNAME`: defaults to `fellowship-oj`.
 
 The official Tailscale image and the CLI copied into the judge image both use
 `v1.102.4`. Keep these two versions aligned when upgrading. Tailscale runs in
@@ -244,8 +311,8 @@ the same path in the worker and evaluator containers. Prepare it and find the
 Docker socket group:
 
 ```console
-sudo mkdir -p /var/lib/study-group-online-judge/work
-sudo chown 10001:10001 /var/lib/study-group-online-judge/work
+sudo mkdir -p /var/lib/fellowship-oj/work
+sudo chown 10001:10001 /var/lib/fellowship-oj/work
 stat -c '%g' /var/run/docker.sock
 ```
 
@@ -419,7 +486,7 @@ Messages are paced to Slack's webhook limits and honor `Retry-After` backoff.
 If the service was offline on previous days, it sends only today's summary.
 
 PNG cards are Chromium screenshots of the actual React leaderboard, using its
-CSS, fonts, GitHub avatars, scores, attempt counts, and Taipei submission times.
+CSS, fonts, Flock or GitHub avatars, scores, attempt counts, and Taipei submission times.
 The UI receives the same frozen snapshot as the message. Images are saved in
 `leaderboard-images/` next to the database before their bytes are uploaded to
 Slack. The Docker image includes the built UI and Chromium. For a Python-only
@@ -440,11 +507,40 @@ Configure these variables on the API service (also listed in `.env.example`):
 | Variable | Meaning |
 | --- | --- |
 | `JUDGE_FLOCK_API_URL` | Required API origin, without `/api/v1`. |
-| `JUDGE_FLOCK_API_KEY` | Required API key of a member of the organization. Kept server-side. |
-| `JUDGE_FLOCK_WEB_URL` | Dashboard origin for project/run links; defaults to the API origin. |
+| `JUDGE_FLOCK_TOKEN` | Required CLI token (`flock_cli_…`) of a member of the organization, from `flock token`. Kept server-side. |
+| `JUDGE_FLOCK_WEB_URL` | Browser-accessible dashboard origin for project/run links and avatars; defaults to the API origin. |
 | `JUDGE_FLOCK_ENTITY` | Organization; defaults to `cerulean-labs`. |
 | `JUDGE_FLOCK_LABS_PROJECT` | Judged runs; defaults to `study-group-labs`. |
 | `JUDGE_FLOCK_MIDTERM_PROJECT` | Training runs; defaults to `midterm-nanogpt`. |
+
+Flock's authentication split limits W&B/API keys (including older `flock-…`
+keys) to the W&B protocol. They now receive HTTP 401 on the REST endpoints used
+by the leaderboard. Replacing an old key with a new W&B key does not restore access.
+
+To migrate an existing deployment:
+
+1. Sign in to Flock as a member of `JUDGE_FLOCK_ENTITY` using the Flock CLI:
+   `flock login --host https://flock-api.cerulean.works --no-wandb`.
+   Use your own API origin if different. This sign-in requires browser approval.
+2. Run `flock token --host https://flock-api.cerulean.works` and put the returned
+   CLI token into the API service's `JUDGE_FLOCK_TOKEN` deployment secret.
+   Treat it as a password; keep it out of source control and logs.
+3. Rebuild and recreate the API service (`docker compose up -d --build api`).
+   Check its logs for `Flock refresh succeeded` and the leaderboard's `updated_at`.
+
+`JUDGE_FLOCK_API_KEY` remains a deprecated fallback variable, but its value must
+also be a CLI token. `JUDGE_FLOCK_TOKEN` takes precedence. The API container does
+not need the Flock CLI installed or a mounted credentials file. CLI sessions
+extend their expiry on use (90 days by default); if a sign-in is revoked or
+expires, sign in again, replace the deployment secret, and recreate the API.
+Manage this sign-in under **Command line sign-ins** on the Flock account page.
+
+Midterm participants use their Flock member name and avatar, matched by the run's
+owner ID. Avatar paths are resolved against `JUDGE_FLOCK_WEB_URL`, whose dashboard
+serves `/api/v1/avatars/*` publicly without an API key. Set this URL when the API
+origin is internal. Missing or failed images show initials. Lab participants keep
+their `config.github_actor` identity and GitHub avatar; the run's Flock owner may
+be a shared judge account.
 
 Ensure judged lab runs are available in the Flock labs project (for example,
 through Flock's W&B importer). A project that has not been created yet shows an

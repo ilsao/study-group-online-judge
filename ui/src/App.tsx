@@ -22,6 +22,7 @@ type Entry = {
     submission_id: string;
     attempts: number;
     participant_id?: string;
+    avatar_url?: string | null;
     val_loss?: number;
 };
 type Lab = {
@@ -56,15 +57,19 @@ function runLink(url: string | null) {
     }
 }
 
-function ParticipantAvatar({ username, flock }: { username: string; flock: boolean }) {
+function ParticipantAvatar({ entry }: { entry: Entry }) {
     const [failed, setFailed] = useState(false);
+    const username = entry.github_actor;
+    const src = entry.participant_id?.startsWith("flock:")
+        ? entry.avatar_url
+        : `https://github.com/${encodeURIComponent(username)}.png?size=72`;
     return (
         <span className="avatar" aria-hidden="true">
-            {failed || flock ? (
+            {failed || !src ? (
                 username.slice(0, 2).toUpperCase()
             ) : (
                 <img
-                    src={`https://github.com/${encodeURIComponent(username)}.png?size=72`}
+                    src={src}
                     alt=""
                     width={36}
                     height={36}
@@ -292,11 +297,8 @@ export default function App() {
                                             <td>
                                                 <div className="participant">
                                                     <ParticipantAvatar
-                                                        key={entry.github_actor}
-                                                        flock={entry.participant_id?.startsWith("flock:") ?? false}
-                                                        username={
-                                                            entry.github_actor
-                                                        }
+                                                        key={`${entry.participant_id ?? entry.github_actor}:${entry.avatar_url ?? ""}`}
+                                                        entry={entry}
                                                     />
                                                     <div>
                                                         <strong>
